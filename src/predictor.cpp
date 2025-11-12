@@ -32,10 +32,10 @@ int ghistoryBits = 15; // Number of bits used for Global History
 int ghistoryBits_tournament = 12; // Number of bits used for Global History
 int lhistoryBits_tournament = 16; // Number of bits used for Local History
 
-int ghistoryBits_tage_T4 = 128; // long history
-int ghistoryBits_tage_T3 = 64;
-int ghistoryBits_tage_T2 = 32;
-int ghistoryBits_tage_T1 = 16;
+int ghistoryBits_tage_T4 = 130; // long history
+int ghistoryBits_tage_T3 = 44;
+int ghistoryBits_tage_T2 = 14;
+int ghistoryBits_tage_T1 = 4;
 
 int tage_tag_bits_T4 = 9;
 int tage_tag_bits_T3 = 9;
@@ -89,10 +89,17 @@ static uint8_t  *tage_u_T4 = NULL;
 
 // static uint64_t ghistory_tage = 0ULL; // global history (up to 64 bits supported)
 
-// Support up to 128 bits of global history using two 64-bit halves.
-static uint64_t ghistory_low  = 0ULL; // lower 64 bits (most recent)
-static uint64_t ghistory_high = 0ULL; // upper 64 bits (older)
-static const int GHISTORY_MAX_BITS = 128;
+// // Support up to 128 bits of global history using two 64-bit halves.
+// static uint64_t ghistory_low  = 0ULL; // lower 64 bits (most recent)
+// static uint64_t ghistory_high = 0ULL; // upper 64 bits (older)
+// static const int GHISTORY_MAX_BITS = 128;
+
+// 256-bit global history using four 64-bit segments
+static uint64_t ghistory_q0 = 0ULL; // bits [0..63]   (most recent)
+static uint64_t ghistory_q1 = 0ULL; // bits [64..127]
+static uint64_t ghistory_q2 = 0ULL; // bits [128..191]
+static uint64_t ghistory_q3 = 0ULL; // bits [192..255] (oldest)
+static const int GHISTORY_MAX_BITS = 256;
 
 static uint64_t tage_global_reset_counter = 0;      // counts number of trained branches
 static const uint64_t TAGE_RESET_PERIOD = 2048000ULL; // total reset period
@@ -471,10 +478,19 @@ void cleanup_tournament()
 
 // TAGE functions
 
-// Combine ghistory_high and ghistory_low into a single 128-bit value view.
-// Bits 0..63 = low (recent), 64..127 = high (older)
-static inline void get_ghistory_bits(__uint128_t *hist) {
-    *hist = ((__uint128_t)ghistory_high << 64) | (__uint128_t)ghistory_low;
+// // Combine ghistory_high and ghistory_low into a single 128-bit value view.
+// // Bits 0..63 = low (recent), 64..127 = high (older)
+// static inline void get_ghistory_bits(__uint128_t *hist) {
+//     *hist = ((__uint128_t)ghistory_high << 64) | (__uint128_t)ghistory_low;
+// }
+
+// Combine four 64-bit segments into a 256-bit value view.
+// Bits 0..63 = q0 (recent), 64..127 = q1, etc.
+static inline __uint128_t get_ghistory_low128(void) {
+    return ((__uint128_t)ghistory_q1 << 64) | (__uint128_t)ghistory_q0;
+}
+static inline __uint128_t get_ghistory_high128(void) {
+    return ((__uint128_t)ghistory_q3 << 64) | (__uint128_t)ghistory_q2;
 }
 
 // Helper: compute entries (1 << bits)
@@ -509,7 +525,35 @@ static inline uint32_t entries_from_len(int len_bits) {
 //     return res & ((1u << out_bits) - 1);
 // }
 
-// Fold a 128-bit value into out_bits using XOR of slices
+// // Fold a 128-bit value into out_bits using XOR of slices
+// static uint32_t fold_xor_128(__uint128_t val, int len, int out_bits) {
+//     if (out_bits == 0) return 0;
+//     uint32_t res = 0;
+//     int pos = 0;
+//     int remaining = len;
+//     while (remaining > 0) {
+//         int take = (remaining < out_bits) ? remaining : out_bits;
+//         uint32_t chunk = (uint32_t)((val >> pos) & (( (__uint128_t)1 << take) - 1));
+//         res ^= chunk;
+//         pos += take;
+//         remaining -= take;
+//     }
+//     return res & ((1u << out_bits) - 1);
+// }
+
+// // Similar folding but with stride and offset mixing
+// static uint32_t fold_xor_with_stride_128(__uint128_t val, int len, int out_bits, int stride, int offset) {
+//     if (out_bits == 0) return 0;
+//     uint32_t res = 0;
+//     for (int i = 0; i < len; ++i) {
+//         uint32_t bit = (uint32_t)((val >> i) & 1u);
+//         int pos = (i * stride + offset) % out_bits;
+//         res ^= (bit << pos);
+//     }
+//     return res & ((1u << out_bits) - 1);
+// }
+
+// Fold a 128-bit value into out_bits
 static uint32_t fold_xor_128(__uint128_t val, int len, int out_bits) {
     if (out_bits == 0) return 0;
     uint32_t res = 0;
@@ -517,7 +561,7 @@ static uint32_t fold_xor_128(__uint128_t val, int len, int out_bits) {
     int remaining = len;
     while (remaining > 0) {
         int take = (remaining < out_bits) ? remaining : out_bits;
-        uint32_t chunk = (uint32_t)((val >> pos) & (( (__uint128_t)1 << take) - 1));
+        uint32_t chunk = (uint32_t)((val >> pos) & (((__uint128_t)1 << take) - 1));
         res ^= chunk;
         pos += take;
         remaining -= take;
@@ -525,12 +569,28 @@ static uint32_t fold_xor_128(__uint128_t val, int len, int out_bits) {
     return res & ((1u << out_bits) - 1);
 }
 
-// Similar folding but with stride and offset mixing
-static uint32_t fold_xor_with_stride_128(__uint128_t val, int len, int out_bits, int stride, int offset) {
+// Fold across both 128-bit halves for up to 256 bits
+static uint32_t fold_xor_256(__uint128_t high, __uint128_t low, int len, int out_bits) {
+    if (len <= 128)
+        return fold_xor_128(low, len, out_bits);
+    else {
+        uint32_t low_part  = fold_xor_128(low, 128, out_bits);
+        uint32_t high_part = fold_xor_128(high, len - 128, out_bits);
+        return (low_part ^ high_part) & ((1u << out_bits) - 1);
+    }
+}
+
+// Stride-based folding for 256-bit inputs
+static uint32_t fold_xor_with_stride_256(__uint128_t high, __uint128_t low,
+                                         int len, int out_bits, int stride, int offset) {
     if (out_bits == 0) return 0;
     uint32_t res = 0;
     for (int i = 0; i < len; ++i) {
-        uint32_t bit = (uint32_t)((val >> i) & 1u);
+        uint64_t bit;
+        if (i < 128)
+            bit = (uint64_t)((low >> i) & 1u);
+        else
+            bit = (uint64_t)((high >> (i - 128)) & 1u);
         int pos = (i * stride + offset) % out_bits;
         res ^= (bit << pos);
     }
@@ -556,19 +616,35 @@ static uint32_t fold_xor_with_stride_128(__uint128_t val, int len, int out_bits,
 //     return (p ^ g) & ((1u << tag_bits) - 1);
 // }
 
+// static inline uint32_t compute_index(uint32_t pc, int ghistoryBits, int table_len_bits) {
+//     __uint128_t ghr;
+//     get_ghistory_bits(&ghr);
+//     uint32_t folded_pc  = fold_xor_128(pc, 32, table_len_bits);
+//     uint32_t folded_ghr = fold_xor_128(ghr, ghistoryBits, table_len_bits);
+//     return (folded_pc ^ folded_ghr) & ((1u << table_len_bits) - 1);
+// }
+
+// static inline uint32_t compute_tag(uint32_t pc, int ghistoryBits, int tag_bits) {
+//     __uint128_t ghr;
+//     get_ghistory_bits(&ghr);
+//     uint32_t p = fold_xor_with_stride_128(pc, 32, tag_bits, 5, 1);
+//     uint32_t g = fold_xor_with_stride_128(ghr, ghistoryBits, tag_bits, 3, 2);
+//     return (p ^ g) & ((1u << tag_bits) - 1);
+// }
+
 static inline uint32_t compute_index(uint32_t pc, int ghistoryBits, int table_len_bits) {
-    __uint128_t ghr;
-    get_ghistory_bits(&ghr);
-    uint32_t folded_pc  = fold_xor_128(pc, 32, table_len_bits);
-    uint32_t folded_ghr = fold_xor_128(ghr, ghistoryBits, table_len_bits);
+    __uint128_t ghr_low  = get_ghistory_low128();
+    __uint128_t ghr_high = get_ghistory_high128();
+    uint32_t folded_pc  = fold_xor_256(ghr_high, (__uint128_t)pc, 32, table_len_bits);
+    uint32_t folded_ghr = fold_xor_256(ghr_high, ghr_low, ghistoryBits, table_len_bits);
     return (folded_pc ^ folded_ghr) & ((1u << table_len_bits) - 1);
 }
 
 static inline uint32_t compute_tag(uint32_t pc, int ghistoryBits, int tag_bits) {
-    __uint128_t ghr;
-    get_ghistory_bits(&ghr);
-    uint32_t p = fold_xor_with_stride_128(pc, 32, tag_bits, 5, 1);
-    uint32_t g = fold_xor_with_stride_128(ghr, ghistoryBits, tag_bits, 3, 2);
+    __uint128_t ghr_low  = get_ghistory_low128();
+    __uint128_t ghr_high = get_ghistory_high128();
+    uint32_t p = fold_xor_with_stride_256(ghr_high, (__uint128_t)pc, 32, tag_bits, 5, 1);
+    uint32_t g = fold_xor_with_stride_256(ghr_high, ghr_low, ghistoryBits, tag_bits, 3, 2);
     return (p ^ g) & ((1u << tag_bits) - 1);
 }
 
@@ -683,8 +759,10 @@ static void init_tage()
     for (uint32_t i = 0; i < eT4; ++i) { tage_bht_T4[i] = N00; tage_tag_T4[i] = 0; tage_u_T4[i] = 0; }
 
     // ghistory_tage = 0ULL;
-    ghistory_low  = 0ULL;
-    ghistory_high = 0ULL;
+    // ghistory_low  = 0ULL;
+    // ghistory_high = 0ULL;
+    ghistory_q0 = ghistory_q1 = ghistory_q2 = ghistory_q3 = 0ULL;
+
 }
 
 // -----------------------------
@@ -909,9 +987,19 @@ void train_tage(uint32_t pc, uint8_t outcome)
 
     // ghistory_tage = ((ghistory_tage << 1) | (uint64_t)(outcome & 1u));
 
-    // Shift 128-bit global history left by 1 and insert new outcome at LSB
-    ghistory_high = (ghistory_high << 1) | (ghistory_low >> 63);
-    ghistory_low  = (ghistory_low << 1) | ((uint64_t)(outcome & 1u));
+    // // Shift 128-bit global history left by 1 and insert new outcome at LSB
+    // ghistory_high = (ghistory_high << 1) | (ghistory_low >> 63);
+    // ghistory_low  = (ghistory_low << 1) | ((uint64_t)(outcome & 1u));
+
+    // Shift the full 256-bit history left by 1 and insert the new outcome bit at LSB
+    uint64_t carry0 = ghistory_q0 >> 63;
+    uint64_t carry1 = ghistory_q1 >> 63;
+    uint64_t carry2 = ghistory_q2 >> 63;
+
+    ghistory_q3 = (ghistory_q3 << 1) | carry2;
+    ghistory_q2 = (ghistory_q2 << 1) | carry1;
+    ghistory_q1 = (ghistory_q1 << 1) | carry0;
+    ghistory_q0 = (ghistory_q0 << 1) | ((uint64_t)(outcome & 1u));
       
     // -----------------------------
     // Periodic usefulness reset mechanism
