@@ -44,9 +44,9 @@ int tage_tag_bits_T2 = 9;
 int tage_tag_bits_T1 = 9;
 
 int tage_u_bits = 2;           // usefulness counter bits
-int tage_predictor_bits = 3;   // predictor counter bits (3-bit folded states 0..7)
+int tage_predictor_bits = 2;   // predictor counter bits (3-bit folded states 0..7)
 
-int tage_pred_table_length_T0 = 11; // index bits for base predictor (T0)
+int tage_pred_table_length_T0 = 12; // index bits for base predictor (T0)
 int tage_pred_table_length_T1 = 10;
 int tage_pred_table_length_T2 = 10;
 int tage_pred_table_length_T3 = 10;
